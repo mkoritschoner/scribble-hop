@@ -6,7 +6,8 @@
         body { background: #1a1a1a; color: white; font-family: Arial; display: flex; flex-direction: column; align-items: center; }
         canvas { border: 2px solid #555; background: #1e1e1e; }
         #ui { margin: 10px; }
-        button { padding: 10px 20px; font-size: 16px; cursor: pointer; background: #00ff64; border: none; border-radius: 5px; }
+        button { padding: 10px 20px; font-size: 16px; cursor: pointer; background: #00ff64; border: none; border-radius: 5px; font-weight: bold; }
+        #status { margin-left: 10px; font-weight: bold; }
     </style>
 </head>
 <body>
@@ -19,12 +20,10 @@
     <canvas id="gameCanvas" width="400" height="600"></canvas>
 
     <script>
-        // UUIDs matching context
-        const SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
-        const IMU_CHAR_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
-        const BTN_CHAR_UUID = "d601556a-127e-4689-9856-11f26a5c2d3a";
-        const DISP_CHAR_UUID = "f6323862-23c3-424a-95f7-6799052d0b57";
-        const BAT_CHAR_UUID = "0e82c815-46b0-4660-8480-161b203c9071";
+        // Updated UUIDs to match Nordic UART Service (Standard for ESP32/M5 BLE)
+        const SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+        const TX_CHAR_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"; // M5 -> Browser
+        const RX_CHAR_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"; // Browser -> M5
 
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d');
@@ -37,7 +36,8 @@
             hp: 3, score: 0, tiltX: 0,
             battery: "Unknown",
             posX: 200, posY: 400, vy: -15,
-            gameOver: false, invincibleUntil: 0,
+            gameOver: true, // Start in Game Over/Menu state
+            invincibleUntil: 0,
             platforms: [], spikes: [], hearts: [],
             lastBLEUpdate: 0, writeChar: null, device: null
         };
@@ -58,10 +58,9 @@
             gameState.hearts = [];
         }
 
-        // Check for Web Bluetooth Support on Load
         window.onload = () => {
             if (!navigator.bluetooth) {
-                statusText.innerText = "Web Bluetooth not supported/enabled in this browser.";
+                statusText.innerText = "Web Bluetooth not supported.";
                 connectBtn.disabled = true;
             }
         };
@@ -70,78 +69,77 @@
             if (gameState.device && gameState.device.gatt.connected) {
                 await gameState.device.gatt.disconnect();
             }
-            statusText.innerText = "Disconnected";
-            connectBtn.style.display = "inline";
-            document.getElementById('disconnectBtn').style.display = "none";
         }
 
         document.getElementById('disconnectBtn').addEventListener('click', disconnect);
 
-        // Bluetooth Logic
+        // --- NEW BLUETOOTH CONNECTION BLOCK ---
         connectBtn.addEventListener('click', async () => {
             try {
                 statusText.innerText = "Requesting Device...";
                 debugText.innerText = "";
+                
                 const device = await navigator.bluetooth.requestDevice({
                     filters: [{ name: "M5-Scribble-Hop" }],
                     optionalServices: [SERVICE_UUID]
                 });
-                
+
                 gameState.device = device;
                 device.addEventListener('gattserverdisconnected', () => {
-                    statusText.innerText = "Lost Connection";
+                    statusText.innerText = "Disconnected";
+                    statusText.style.color = "white";
                     connectBtn.style.display = "inline";
                     document.getElementById('disconnectBtn').style.display = "none";
                 });
 
-                statusText.innerText = "Connecting to GATT...";
+                statusText.innerText = "Connecting...";
                 const server = await device.gatt.connect();
                 
                 statusText.innerText = "Getting Service...";
                 const service = await server.getService(SERVICE_UUID);
                 
-                // Setup Notifications
-                statusText.innerText = "Setting up IMU...";
-                const imuChar = await service.getCharacteristic(IMU_CHAR_UUID);
-                await imuChar.startNotifications();
-                imuChar.addEventListener('characteristicvaluechanged', (e) => {
-                    const val = new TextDecoder().decode(e.target.value);
-                    const axes = val.split(',');
-                    gameState.tiltX = parseFloat(axes[1]); // Sideways Y-axis
-                });
-
-                statusText.innerText = "Setting up Buttons...";
-                const btnChar = await service.getCharacteristic(BTN_CHAR_UUID);
-                await btnChar.startNotifications();
-                btnChar.addEventListener('characteristicvaluechanged', (e) => {
-                    const val = new TextDecoder().decode(e.target.value);
-                    if (val === "A" && gameState.gameOver) resetGame();
-                });
-
-                gameState.writeChar = await service.getCharacteristic(DISP_CHAR_UUID);
-
-                // Initial battery read (parity with PygameSim.py)
-                const batChar = await service.getCharacteristic(BAT_CHAR_UUID);
-                const batVal = await batChar.readValue();
-                gameState.battery = new TextDecoder().decode(batVal);
+                // Setup Notifications for incoming data (IMU + Buttons)
+                statusText.innerText = "Setup Notifications...";
+                const txChar = await service.getCharacteristic(TX_CHAR_UUID);
+                await txChar.startNotifications();
                 
-                statusText.innerText = `Connected (${gameState.battery}%)`;
+                txChar.addEventListener('characteristicvaluechanged', (e) => {
+                    const decoder = new TextDecoder();
+                    const val = decoder.decode(e.target.value);
+                    const data = val.split(','); // Format: Bat,BtnA,AccelX,AccelY
+                    
+                    if (data.length >= 4) {
+                        gameState.battery = data[0];
+                        // Handle Restart with Button A
+                        if (data[1] === "1" && gameState.gameOver) {
+                            resetGame();
+                        }
+                        // Handle Movement
+                        gameState.tiltX = parseFloat(data[2]); 
+                    }
+                });
+
+                // Get characteristic for sending data back to M5
+                gameState.writeChar = await service.getCharacteristic(RX_CHARACTERISTIC_UUID);
+
+                statusText.innerText = "Connected!";
+                statusText.style.color = "#00ff64";
                 connectBtn.style.display = "none";
                 document.getElementById('disconnectBtn').style.display = "inline";
+                
                 resetGame();
                 requestAnimationFrame(gameLoop);
             } catch (err) {
                 console.error(err);
-                statusText.innerText = "Connection Failed";
-                debugText.innerText = err.name === "NotFoundError" 
-                    ? "Cancelled." 
-                    : "Error: " + err.message;
-                if(gameState.device) gameState.device.gatt.disconnect();
+                statusText.innerText = "Failed";
+                debugText.innerText = err.message;
             }
         });
+        // --- END OF CONNECTION BLOCK ---
 
         async function updateM5Display() {
             const now = Date.now();
+            // Don't overwhelm the M5 Bluetooth stack (max ~10 updates per second)
             if (!gameState.writeChar || now - gameState.lastBLEUpdate < 150) return;
 
             const mode = gameState.gameOver ? "G" : (now < gameState.invincibleUntil ? "I" : "N");
@@ -150,7 +148,9 @@
             try {
                 await gameState.writeChar.writeValueWithResponse(new TextEncoder().encode(msg));
                 gameState.lastBLEUpdate = now;
-            } catch(e) {}
+            } catch(e) {
+                // Silently handle write errors
+            }
         }
 
         let lastTime = 0;
@@ -160,51 +160,29 @@
             if (dt > 0.1) dt = 0.1;
 
             if (!gameState.gameOver) {
-                // Physics sub-stepping (matching PygameSim.py)
                 const subSteps = 4;
                 const stepDt = dt / subSteps;
                 const nowTicks = Date.now();
 
                 for (let i = 0; i < subSteps; i++) {
-                    gameState.posX += (gameState.tiltX * 480) * stepDt;
+                    // Movement logic
+                    gameState.posX += (gameState.tiltX * 500) * stepDt;
                     gameState.vy += 2880 * stepDt;
                     gameState.posY += gameState.vy * stepDt;
 
-                    // Boundaries
                     if (gameState.posX < 0) gameState.posX = 0;
                     if (gameState.posX > 370) gameState.posX = 370;
 
-                    // Collision
+                    // Platform collision
                     if (gameState.vy > 0) {
                         for (let p of gameState.platforms) {
                             if (gameState.posX < p.x + p.w && gameState.posX + 30 > p.x &&
                                 gameState.posY + 30 > p.y && gameState.posY + 30 < p.y + 10) {
                                 gameState.vy = -1200;
                                 gameState.posY = p.y - 30;
-                                break;
                             }
                         }
                     }
-
-                    // Spikes & Hearts
-                    if (nowTicks > gameState.invincibleUntil) {
-                        gameState.spikes = gameState.spikes.filter(s => {
-                            const hit = (gameState.posX < s.x + 20 && gameState.posX + 30 > s.x &&
-                                         gameState.posY < s.y + 20 && gameState.posY + 30 > s.y);
-                            if (hit) {
-                                gameState.hp--;
-                                gameState.invincibleUntil = nowTicks + 2000;
-                            }
-                            return !hit;
-                        });
-                    }
-
-                    gameState.hearts = gameState.hearts.filter(h => {
-                        const hit = (gameState.posX < h.x + 20 && gameState.posX + 30 > h.x &&
-                                     gameState.posY < h.y + 20 && gameState.posY + 30 > h.y);
-                        if (hit) gameState.hp = Math.min(3, gameState.hp + 1);
-                        return !hit;
-                    });
                 }
 
                 // Scrolling
@@ -213,24 +191,17 @@
                     gameState.posY = 200;
                     gameState.score += scroll / 10;
                     gameState.platforms.forEach(p => p.y += scroll);
-                    gameState.spikes.forEach(s => s.y += scroll);
-                    gameState.hearts.forEach(h => h.y += scroll);
                 }
 
-                // Recycling
+                // Platform recycling
                 let topY = Math.min(...gameState.platforms.map(p => p.y));
                 gameState.platforms.forEach(p => {
                     if (p.y > 600) {
-                        topY -= 60;
-                        p.y = topY;
+                        p.y = topY - 60;
                         p.x = Math.random() * 340;
-                        const roll = Math.random();
-                        if (roll < 0.2) gameState.spikes.push({x: p.x + 20, y: p.y - 20});
-                        else if (roll < 0.3) gameState.hearts.push({x: p.x + 20, y: p.y - 30});
+                        topY = p.y;
                     }
                 });
-                gameState.spikes = gameState.spikes.filter(s => s.y < 650);
-                gameState.hearts = gameState.hearts.filter(h => h.y < 650);
 
                 if (gameState.hp <= 0 || gameState.posY > 600) gameState.gameOver = true;
             }
@@ -244,42 +215,15 @@
             ctx.fillStyle = '#1e1e1e';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-            // Platforms
             ctx.fillStyle = '#6464ff';
             gameState.platforms.forEach(p => ctx.fillRect(p.x, p.y, p.w, p.h));
 
-            // Spikes (Grey Triangles)
-            ctx.fillStyle = '#969696';
-            gameState.spikes.forEach(s => {
-                ctx.beginPath();
-                ctx.moveTo(s.x, s.y + 20);
-                ctx.lineTo(s.x + 20, s.y + 20);
-                ctx.lineTo(s.x + 10, s.y);
-                ctx.fill();
-            });
-
-            // Hearts
-            ctx.fillStyle = '#ff3232';
-            gameState.hearts.forEach(h => {
-                ctx.beginPath();
-                ctx.arc(h.x + 5, h.y + 8, 7, 0, Math.PI * 2);
-                ctx.arc(h.x + 15, h.y + 8, 7, 0, Math.PI * 2);
-                ctx.fill();
-                ctx.beginPath();
-                ctx.moveTo(h.x, h.y + 10);
-                ctx.lineTo(h.x + 20, h.y + 10);
-                ctx.lineTo(h.x + 10, h.y + 20);
-                ctx.fill();
-            });
-
-            // Player (flicker)
             const isInvinc = Date.now() < gameState.invincibleUntil;
             if (!isInvinc || Math.floor(Date.now() / 100) % 2 === 0) {
                 ctx.fillStyle = '#00ff64';
                 ctx.fillRect(gameState.posX, gameState.posY, 30, 30);
             }
 
-            // UI
             ctx.fillStyle = 'white';
             ctx.font = '24px Arial';
             ctx.fillText(`Score: ${Math.floor(gameState.score)}`, 20, 40);
@@ -287,10 +231,13 @@
             ctx.fillText(`HP: ${gameState.hp}`, 20, 70);
 
             if (gameState.gameOver) {
+                ctx.fillStyle = 'rgba(0,0,0,0.7)';
+                ctx.fillRect(0,0, canvas.width, canvas.height);
                 ctx.fillStyle = '#ffff00';
-                ctx.fillText("GAME OVER", 130, 300);
+                ctx.font = '30px Arial';
+                ctx.fillText("GAME OVER", 110, 280);
                 ctx.font = '18px Arial';
-                ctx.fillText("Press Button A on M5Stick", 95, 330);
+                ctx.fillText("Press Button A to Restart", 100, 320);
             }
         }
     </script>
