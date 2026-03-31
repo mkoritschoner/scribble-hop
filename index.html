@@ -13,6 +13,7 @@
     <div id="ui">
         <button id="connectBtn">Connect M5Stick</button>
         <span id="status">Disconnected</span>
+        <div id="debug" style="font-size: 12px; color: #888; margin-top: 5px;"></div>
     </div>
     <canvas id="gameCanvas" width="400" height="600"></canvas>
 
@@ -22,15 +23,18 @@
         const IMU_CHAR_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
         const BTN_CHAR_UUID = "d601556a-127e-4689-9856-11f26a5c2d3a";
         const DISP_CHAR_UUID = "f6323862-23c3-424a-95f7-6799052d0b57";
+        const BAT_CHAR_UUID = "0e82c815-46b0-4660-8480-161b203c9071";
 
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d');
         const connectBtn = document.getElementById('connectBtn');
         const statusText = document.getElementById('status');
+        const debugText = document.getElementById('debug');
 
         // Game State
         let gameState = {
-            hp: 3, score: 0, tiltX: 0, 
+            hp: 3, score: 0, tiltX: 0,
+            battery: "Unknown",
             posX: 200, posY: 400, vy: -15,
             gameOver: false, invincibleUntil: 0,
             platforms: [], spikes: [], hearts: [],
@@ -57,6 +61,7 @@
         connectBtn.addEventListener('click', async () => {
             try {
                 statusText.innerText = "Scanning...";
+                debugText.innerText = "";
                 const device = await navigator.bluetooth.requestDevice({
                     filters: [{ name: "M5Stick-Controller" }],
                     optionalServices: [SERVICE_UUID]
@@ -81,14 +86,22 @@
                 });
 
                 gameState.writeChar = await service.getCharacteristic(DISP_CHAR_UUID);
+
+                // Initial battery read (parity with PygameSim.py)
+                const batChar = await service.getCharacteristic(BAT_CHAR_UUID);
+                const batVal = await batChar.readValue();
+                gameState.battery = new TextDecoder().decode(batVal);
                 
-                statusText.innerText = "Connected";
+                statusText.innerText = `Connected (${gameState.battery}%)`;
                 connectBtn.style.display = "none";
                 resetGame();
                 requestAnimationFrame(gameLoop);
             } catch (err) {
                 console.error(err);
                 statusText.innerText = "Connection Failed";
+                debugText.innerText = err.name === "NotFoundError" 
+                    ? "Device not found or cancelled." 
+                    : "Error: " + err.message + ". Try 'Forgetting' the device in Windows settings first.";
             }
         });
 
@@ -100,7 +113,7 @@
             const msg = `${mode}|${gameState.hp}|${Math.floor(gameState.score)}`;
             
             try {
-                await gameState.writeChar.writeValue(new TextEncoder().encode(msg));
+                await gameState.writeChar.writeValueWithResponse(new TextEncoder().encode(msg));
                 gameState.lastBLEUpdate = now;
             } catch(e) {}
         }
