@@ -57,6 +57,14 @@
             gameState.hearts = [];
         }
 
+        // Check for Web Bluetooth Support on Load
+        window.onload = () => {
+            if (!navigator.bluetooth) {
+                statusText.innerText = "Web Bluetooth not supported/enabled in this browser.";
+                connectBtn.disabled = true;
+            }
+        };
+
         // Bluetooth Logic
         connectBtn.addEventListener('click', async () => {
             try {
