@@ -12,6 +12,7 @@
 <body>
     <div id="ui">
         <button id="connectBtn">Connect M5Stick</button>
+        <button id="disconnectBtn" style="display:none; background:#ff4444;">Disconnect</button>
         <span id="status">Disconnected</span>
         <div id="debug" style="font-size: 12px; color: #888; margin-top: 5px;"></div>
     </div>
@@ -38,7 +39,7 @@
             posX: 200, posY: 400, vy: -15,
             gameOver: false, invincibleUntil: 0,
             platforms: [], spikes: [], hearts: [],
-            lastBLEUpdate: 0, writeChar: null
+            lastBLEUpdate: 0, writeChar: null, device: null
         };
 
         function resetGame() {
@@ -65,19 +66,42 @@
             }
         };
 
+        async function disconnect() {
+            if (gameState.device && gameState.device.gatt.connected) {
+                await gameState.device.gatt.disconnect();
+            }
+            statusText.innerText = "Disconnected";
+            connectBtn.style.display = "inline";
+            document.getElementById('disconnectBtn').style.display = "none";
+        }
+
+        document.getElementById('disconnectBtn').addEventListener('click', disconnect);
+
         // Bluetooth Logic
         connectBtn.addEventListener('click', async () => {
             try {
-                statusText.innerText = "Scanning...";
+                statusText.innerText = "Requesting Device...";
                 debugText.innerText = "";
                 const device = await navigator.bluetooth.requestDevice({
-                    filters: [{ name: "M5Stick-Controller" }],
+                    filters: [{ name: "M5-Scribble-Hop" }],
                     optionalServices: [SERVICE_UUID]
                 });
+                
+                gameState.device = device;
+                device.addEventListener('gattserverdisconnected', () => {
+                    statusText.innerText = "Lost Connection";
+                    connectBtn.style.display = "inline";
+                    document.getElementById('disconnectBtn').style.display = "none";
+                });
+
+                statusText.innerText = "Connecting to GATT...";
                 const server = await device.gatt.connect();
+                
+                statusText.innerText = "Getting Service...";
                 const service = await server.getService(SERVICE_UUID);
                 
                 // Setup Notifications
+                statusText.innerText = "Setting up IMU...";
                 const imuChar = await service.getCharacteristic(IMU_CHAR_UUID);
                 await imuChar.startNotifications();
                 imuChar.addEventListener('characteristicvaluechanged', (e) => {
@@ -86,6 +110,7 @@
                     gameState.tiltX = parseFloat(axes[1]); // Sideways Y-axis
                 });
 
+                statusText.innerText = "Setting up Buttons...";
                 const btnChar = await service.getCharacteristic(BTN_CHAR_UUID);
                 await btnChar.startNotifications();
                 btnChar.addEventListener('characteristicvaluechanged', (e) => {
@@ -102,14 +127,16 @@
                 
                 statusText.innerText = `Connected (${gameState.battery}%)`;
                 connectBtn.style.display = "none";
+                document.getElementById('disconnectBtn').style.display = "inline";
                 resetGame();
                 requestAnimationFrame(gameLoop);
             } catch (err) {
                 console.error(err);
                 statusText.innerText = "Connection Failed";
                 debugText.innerText = err.name === "NotFoundError" 
-                    ? "Device not found or cancelled." 
-                    : "Error: " + err.message + ". Try 'Forgetting' the device in Windows settings first.";
+                    ? "Cancelled." 
+                    : "Error: " + err.message;
+                if(gameState.device) gameState.device.gatt.disconnect();
             }
         });
 
