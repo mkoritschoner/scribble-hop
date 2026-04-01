@@ -128,17 +128,20 @@ function gameLoop(timestamp) {
 }
 
 function updatePhysics(dt) {
-    // Horizontal movement
+    const now = Date.now();
+    
+    // Horizontal movement (Tilt)
     gameState.posX += (gameState.tiltX * 500) * dt;
-    // Gravity
+    
+    // Gravity and Vertical movement
     gameState.playerVY += 2500 * dt;
     gameState.posY += gameState.playerVY * dt;
 
-    // Bounds
+    // Canvas Bounds
     if (gameState.posX < 0) gameState.posX = 0;
     if (gameState.posX > 370) gameState.posX = 370;
 
-    // Collisions
+    // 1. Collision with Platforms (One-way)
     if (gameState.playerVY > 0) {
         gameState.platforms.forEach(p => {
             if (gameState.posX < p.x + p.w && gameState.posX + 30 > p.x &&
@@ -149,39 +152,80 @@ function updatePhysics(dt) {
         });
     }
 
-    // Scrolling
+    // 2. Collision with Spikes (Damage)
+    if (now > gameState.invincibleUntil) {
+        // We iterate backwards to safely remove items while looping
+        for (let i = gameState.spikes.length - 1; i >= 0; i--) {
+            let s = gameState.spikes[i];
+            // Simple bounding box check
+            if (gameState.posX < s.x + 20 && gameState.posX + 30 > s.x &&
+                gameState.posY < s.y + 20 && gameState.posY + 30 > s.y) {
+                
+                gameState.hp -= 1;
+                gameState.invincibleUntil = now + 2000; // 2 seconds of invincibility
+                gameState.spikes.splice(i, 1); // Remove the spike we hit
+                break; 
+            }
+        }
+    }
+
+    // 3. Collision with Hearts (Healing)
+    for (let i = gameState.hearts.length - 1; i >= 0; i--) {
+        let h = gameState.hearts[i];
+        if (gameState.posX < h.x + 20 && gameState.posX + 30 > h.x &&
+            gameState.posY < h.y + 20 && gameState.posY + 30 > h.y) {
+            
+            gameState.hp = Math.min(3, gameState.hp + 1); // Cap at 3 HP
+            gameState.hearts.splice(i, 1); // Remove heart
+        }
+    }
+
+    // Scrolling logic
     if (gameState.posY < 200) {
         let diff = 200 - gameState.posY;
         gameState.posY = 200;
         gameState.score += diff / 10;
         gameState.platforms.forEach(p => p.y += diff);
-        gameState.spikes.forEach(s => s.y += diff);
-        gameState.hearts.forEach(h => h.y += diff);
+        gameState.spikes.forEach(p => p.y += diff);
+        gameState.hearts.forEach(p => p.y += diff);
     }
 
-    // Recycling
+    // Clean up objects that fall off screen
+    gameState.spikes = gameState.spikes.filter(s => s.y < 650);
+    gameState.hearts = gameState.hearts.filter(h => h.y < 650);
+
+    // Platform Recycling & Spawning
     gameState.platforms.forEach(p => {
         if (p.y > 600) {
-            p.y -= 600;
+            // Find highest platform to place this one above it
+            let minY = Math.min(...gameState.platforms.map(pl => pl.y));
+            p.y = minY - 60; 
             p.x = Math.random() * 340;
-            // Spawn items
-            if (Math.random() < 0.1) gameState.spikes.push({x: p.x + 20, y: p.y - 20});
-            if (Math.random() < 0.05) gameState.hearts.push({x: p.x + 20, y: p.y - 25});
+            
+            // Random Spawns on new platforms
+            let roll = Math.random();
+            if (roll < 0.2) { // 20% Spike chance
+                gameState.spikes.push({x: p.x + 20, y: p.y - 20});
+            } else if (roll < 0.3) { // 10% Heart chance
+                gameState.hearts.push({x: p.x + 20, y: p.y - 25});
+            }
         }
     });
 
-    // Check Fail
-    if (gameState.posY > 600 || gameState.hp <= 0) gameState.gameOver = true;
+    // Game Over Check
+    if (gameState.posY > 600 || gameState.hp <= 0) {
+        gameState.gameOver = true;
+    }
 }
 
 function draw() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Draw Platforms
+    // Platforms
     ctx.fillStyle = "#6464ff";
     gameState.platforms.forEach(p => ctx.fillRect(p.x, p.y, p.w, p.h));
 
-    // Draw Spikes
+    // Spikes (Grey Triangles)
     ctx.fillStyle = "#969696";
     gameState.spikes.forEach(s => {
         ctx.beginPath();
@@ -191,31 +235,50 @@ function draw() {
         ctx.fill();
     });
 
-    // Draw Player
-    let flash = (Date.now() < gameState.invincibleUntil) && (Math.floor(Date.now()/100) % 2 === 0);
-    if (!flash) {
+    // Hearts (Red Circles/Simple Heart shape)
+    ctx.fillStyle = "#ff3232";
+    gameState.hearts.forEach(h => {
+        ctx.beginPath();
+        ctx.arc(h.x + 5, h.y + 5, 7, 0, Math.PI * 2);
+        ctx.arc(h.x + 15, h.y + 5, 7, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(h.x, h.y + 8);
+        ctx.lineTo(h.x + 10, h.y + 20);
+        ctx.lineTo(h.x + 20, h.y + 8);
+        ctx.fill();
+    });
+
+    // Player (Flicker if invincible)
+    const isInvincible = Date.now() < gameState.invincibleUntil;
+    const blink = Math.floor(Date.now() / 100) % 2 === 0;
+    
+    if (!isInvincible || blink) {
         ctx.fillStyle = "#00ff64";
         ctx.fillRect(gameState.posX, gameState.posY, 30, 30);
     }
 
-    // UI
+    // UI Overlay
     ctx.fillStyle = "white";
     ctx.font = "bold 30px Arial";
     ctx.fillText(`Score: ${Math.floor(gameState.score)}`, 20, 40);
-    ctx.font = "20px Arial";
+    
     ctx.fillStyle = "#ff6464";
+    ctx.font = "20px Arial";
     ctx.fillText(`HP: ${gameState.hp}`, 20, 70);
+    
     ctx.fillStyle = "#00c8ff";
-    ctx.fillText(`Bat: ${gameState.battery}%`, 20, 580);
+    ctx.fillText(`Battery: ${gameState.battery}%`, 20, 580);
 
     if (gameState.gameOver) {
-        ctx.fillStyle = "rgba(0,0,0,0.7)";
+        ctx.fillStyle = "rgba(0,0,0,0.8)";
         ctx.fillRect(0, 0, 400, 600);
         ctx.fillStyle = "yellow";
-        ctx.font = "24px Arial";
         ctx.textAlign = "center";
+        ctx.font = "bold 30px Arial";
         ctx.fillText("GAME OVER", 200, 280);
-        ctx.fillText("Press Button A to Restart", 200, 320);
+        ctx.font = "20px Arial";
+        ctx.fillText("Press M5 Button A to Restart", 200, 320);
         ctx.textAlign = "left";
     }
 }
